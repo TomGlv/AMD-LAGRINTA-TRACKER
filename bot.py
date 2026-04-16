@@ -2,92 +2,86 @@ import requests
 import datetime
 import os
 
-# Configuration
+# Configuration (récupérée via GitHub Secrets pour la sécurité)
 RIOT_API_KEY = os.getenv("RIOT_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-REGION_ACCOUNT = "europe"      # Pour le PUUID
-REGION_PLATFORM = "euw1"       # Pour le Rang (EUW)
+# L'ID Discord que tu as fourni pour le ping
+DISCORD_USER_ID = "931963091166564382"
+
+REGION_ACCOUNT = "europe"
+REGION_PLATFORM = "euw1"
 GAME_NAME = "AMD LA GRINTA"
 TAG_LINE = "6276"
 
 def run_bot():
     headers = {"X-Riot-Token": RIOT_API_KEY}
     
-    # 1. Récupérer le PUUID
+    # 1. Récupérer le PUUID via Riot ID
     acc_url = f"https://{REGION_ACCOUNT}.api.riotgames.com/riot/account/v1/accounts/by-game-name/{GAME_NAME}/{TAG_LINE}"
     res = requests.get(acc_url, headers=headers)
-    if res.status_code != 200: return
-    data_acc = res.json()
-    puuid = data_acc['puuid']
+    if res.status_code != 200:
+        print(f"Erreur Account API: {res.status_code}")
+        return
+    puuid = res.json()['puuid']
 
-    # 2. Récupérer l'ID d'invocateur (nécessaire pour le rang)
+    # 2. Récupérer l'ID d'invocateur (Summoner ID)
     sum_url = f"https://{REGION_PLATFORM}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
     res_sum = requests.get(sum_url, headers=headers)
     summoner_id = res_sum.json()['id']
 
-    # 3. Récupérer le Rang et LPs
+    # 3. Récupérer le Rang et les LPs
     rank_url = f"https://{REGION_PLATFORM}.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
     rank_data = requests.get(rank_url, headers=headers).json()
     
-    rank_str = "Unranked"
-    lp = 0
-    tier = ""
-    
+    rank_str, lp, tier, division = "Unranked", 0, "", ""
     for entry in rank_data:
         if entry['queueType'] == "RANKED_SOLO_5x5":
-            tier = entry['tier'] # Ex: DIAMOND
-            rank = entry['rank'] # Ex: II
-            lp = entry['leaguePoints']
-            rank_str = f"{tier} {rank}"
+            tier, division, lp = entry['tier'], entry['rank'], entry['leaguePoints']
+            rank_str = f"{tier} {division}"
             break
 
-    # 4. Calcul vers le Master
-    # On estime grossièrement la distance. Master = Diamond 1, 100 LP.
-    # Si déjà Master, on change le message.
-    if tier == "MASTER":
-        master_status = "Il est déjà Master, quel crack."
+    # 4. Calcul précis du chemin vers le Master (D1 100 LP)
+    if tier == "MASTER" or tier == "GRANDMASTER" or tier == "CHALLENGER":
+        master_status = "Déjà Master ou plus. C'est un monstre."
+    elif tier == "DIAMOND":
+        # Valeur des divisions pour le calcul (en LP)
+        div_value = {"I": 0, "II": 100, "III": 200, "IV": 300}
+        points_to_master = div_value.get(division, 0) + (100 - lp)
+        # Estimation à 20 LP par victoire
+        wins = int(points_to_master / 20) + (1 if points_to_master % 20 > 0 else 0)
+        master_status = f"Encore environ **{wins} wins** (+20lp/w) pour le Master !"
     else:
-        # Calcul simplifié : 100 LP par division + les LP manquants
-        # Note : C'est une estimation car on ne gère pas toutes les divisions ici
-        # On va juste dire combien de wins il faut s'il est en D1 par exemple.
-        if tier == "DIAMOND":
-            # Si D1, il manque (100 - lp) pour le BO. Si D2, c'est plus.
-            # On va rester simple : "À environ X wins du Master"
-            needed_lp = 100 - lp 
-            if "I" in rank and tier == "DIAMOND":
-                wins_needed = int(needed_lp / 20) + (1 if needed_lp % 20 > 0 else 0)
-                master_status = f"Plus que environ **{wins_needed} wins** (+20lp/w) pour le Master !"
-            else:
-                master_status = "Le Master est encore loin, va falloir cliquer."
-        else:
-            master_status = "Le Master ? On en reparle l'année prochaine."
+        master_status = "Le Master est un rêve lointain pour l'instant..."
 
-    # 5. Récupérer le dernier match pour les jours d'inactivité
+    # 5. Calcul des jours d'inactivité (Dernier match)
     m_url = f"https://{REGION_ACCOUNT}.api.riotgames.com/lol/match/v1/matches/by-puuid/{puuid}/ids?start=0&count=1"
     match_ids = requests.get(m_url, headers=headers).json()
     
     days = "?"
     if match_ids:
         d_url = f"https://{REGION_ACCOUNT}.api.riotgames.com/lol/match/v1/matches/{match_ids[0]}"
-        match_info = requests.get(d_url, headers=headers).json()
-        last_game_ts = match_info['info']['gameEndTimestamp'] / 1000
-        days = (datetime.datetime.now() - datetime.datetime.fromtimestamp(last_game_ts)).days
+        m_info = requests.get(d_url, headers=headers).json()
+        # gameEndTimestamp est en millisecondes
+        last_game_ts = m_info['info']['gameEndTimestamp'] / 1000
+        delta = datetime.datetime.now() - datetime.datetime.fromtimestamp(last_game_ts)
+        days = delta.days
 
-    # 6. Construction de l'Embed Discord (plus joli)
+    # 6. Envoi du Webhook avec le Ping et l'image de Viktor
     payload = {
+        "content": f"Hé <@{DISCORD_USER_ID}>, va falloir cliquer un peu ! 📢",
         "embeds": [{
             "title": f"Rapport d'activité : {GAME_NAME} #{TAG_LINE}",
-            "color": 15418782, # Rouge/Orange
-            "description": f"📅 **Jour {days}** d'inactivité totale.",
+            "description": f"Dernière game jouée il y a **{days} jours**.",
+            "color": 15418782, # Couleur orange/rouge
             "fields": [
-                {"name": "Rang Actuel", "value": f"🏆 {rank_str} ({lp} LP)", "inline": True},
-                {"name": "Objectif Master", "value": f"🎯 {master_status}", "inline": False}
+                {"name": "Rang actuel", "value": f"🏆 {rank_str} ({lp} LP)", "inline": True},
+                {"name": "Route vers le Master", "value": f"🎯 {master_status}", "inline": False}
             ],
             "image": {
                 "url": "https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Viktor_0.jpg"
             },
-            "footer": {"text": "Dernière actualisation via GitHub Actions"}
+            "footer": {"text": "Dernière mise à jour : Viktor Bot"}
         }]
     }
     
