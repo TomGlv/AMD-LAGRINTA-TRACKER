@@ -2,13 +2,17 @@ name: AMD Daily Check
 
 on:
   schedule:
-    # 18:00 UTC = 20:00 Heure de Paris
-    - cron: '0 18 * * *'
-  workflow_dispatch: # CE BOUTON PERMET DE TESTER EN CLIQUANT
+    # 08:00 UTC = 10:00 Heure de Paris (Matin)
+    # 19:00 UTC = 21:00 Heure de Paris (Soir)
+    - cron: '0 8,19 * * *'
+  
+  # Permet de lancer le bot manuellement depuis l'onglet Actions
+  workflow_dispatch:
 
 jobs:
   check-amd:
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
