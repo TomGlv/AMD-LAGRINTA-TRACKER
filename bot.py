@@ -1,91 +1,106 @@
 import requests
-import datetime
 import os
+import time
+import datetime
 
-# Configuration (récupérée via GitHub Secrets pour la sécurité)
-RIOT_API_KEY = os.getenv("RIOT_API_KEY")
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-
-# L'ID Discord que tu as fourni pour le ping
+# --- CONFIGURATION ---
+API_KEY = os.getenv("RIOT_API_KEY") # Vérifie bien le nom dans tes GitHub Secrets
+WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL")
 DISCORD_USER_ID = "931963091166564382"
 
-REGION_ACCOUNT = "europe"
-REGION_PLATFORM = "euw1"
 GAME_NAME = "AMD LA GRINTA"
 TAG_LINE = "6276"
+REGION = "europe"
+PLATFORM = "euw1"
+FILE_NAME = "last_match_grinta.txt"
 
-def run_bot():
-    headers = {"X-Riot-Token": RIOT_API_KEY}
-    
-    # 1. Récupérer le PUUID via Riot ID
-    acc_url = f"https://{REGION_ACCOUNT}.api.riotgames.com/riot/account/v1/accounts/by-game-name/{GAME_NAME}/{TAG_LINE}"
-    res = requests.get(acc_url, headers=headers)
-    if res.status_code != 200:
-        print(f"Erreur Account API: {res.status_code}")
-        return
-    puuid = res.json()['puuid']
-
-    # 2. Récupérer l'ID d'invocateur (Summoner ID)
-    sum_url = f"https://{REGION_PLATFORM}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
-    res_sum = requests.get(sum_url, headers=headers)
-    summoner_id = res_sum.json()['id']
-
-    # 3. Récupérer le Rang et les LPs
-    rank_url = f"https://{REGION_PLATFORM}.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
-    rank_data = requests.get(rank_url, headers=headers).json()
-    
-    rank_str, lp, tier, division = "Unranked", 0, "", ""
-    for entry in rank_data:
-        if entry['queueType'] == "RANKED_SOLO_5x5":
-            tier, division, lp = entry['tier'], entry['rank'], entry['leaguePoints']
-            rank_str = f"{tier} {division}"
-            break
-
-    # 4. Calcul précis du chemin vers le Master (D1 100 LP)
-    if tier == "MASTER" or tier == "GRANDMASTER" or tier == "CHALLENGER":
-        master_status = "Déjà Master ou plus. C'est un monstre."
-    elif tier == "DIAMOND":
-        # Valeur des divisions pour le calcul (en LP)
-        div_value = {"I": 0, "II": 100, "III": 200, "IV": 300}
-        points_to_master = div_value.get(division, 0) + (100 - lp)
-        # Estimation à 20 LP par victoire
-        wins = int(points_to_master / 20) + (1 if points_to_master % 20 > 0 else 0)
-        master_status = f"Encore environ **{wins} wins** (+20lp/w) pour le Master !"
+def get_data(url):
+    headers = {"X-Riot-Token": API_KEY}
+    res = requests.get(url, headers=headers)
+    if res.status_code == 200:
+        return res.json()
     else:
-        master_status = "Le Master est un rêve lointain pour l'instant..."
+        print(f"Erreur API sur {url} : {res.status_code}")
+        return None
 
-    # 5. Calcul des jours d'inactivité (Dernier match)
-    m_url = f"https://{REGION_ACCOUNT}.api.riotgames.com/lol/match/v1/matches/by-puuid/{puuid}/ids?start=0&count=1"
-    match_ids = requests.get(m_url, headers=headers).json()
+def calculate_master_distance(tier, rank, lp):
+    if tier == "MASTER": return "Déjà Master !"
+    if tier != "DIAMOND": return "Encore loin du Master..."
     
-    days = "?"
-    if match_ids:
-        d_url = f"https://{REGION_ACCOUNT}.api.riotgames.com/lol/match/v1/matches/{match_ids[0]}"
-        m_info = requests.get(d_url, headers=headers).json()
-        # gameEndTimestamp est en millisecondes
-        last_game_ts = m_info['info']['gameEndTimestamp'] / 1000
-        delta = datetime.datetime.now() - datetime.datetime.fromtimestamp(last_game_ts)
-        days = delta.days
+    ranks_value = {"IV": 300, "III": 200, "II": 100, "I": 0}
+    lp_to_master = ranks_value.get(rank, 0) + (100 - lp)
+    wins_needed = -(-lp_to_master // 20) # Arrondi au supérieur
+    return f"{lp_to_master} LP ({wins_needed} net wins)"
 
-    # 6. Envoi du Webhook avec le Ping et l'image de Viktor
-    payload = {
-        "content": f"Hé <@{DISCORD_USER_ID}>, va falloir cliquer un peu ! 📢",
-        "embeds": [{
-            "title": f"Rapport d'activité : {GAME_NAME} #{TAG_LINE}",
-            "description": f"Dernière game jouée il y a **{days} jours**.",
-            "color": 15418782, # Couleur orange/rouge
-            "fields": [
-                {"name": "Rang actuel", "value": f"🏆 {rank_str} ({lp} LP)", "inline": True},
-                {"name": "Route vers le Master", "value": f"🎯 {master_status}", "inline": False}
-            ],
-            "image": {
-                "url": "https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Viktor_0.jpg"
-            },
-            "footer": {"text": "Dernière mise à jour : Viktor Bot"}
-        }]
-    }
-    
-    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+def main():
+    # 1. Récupérer le PUUID
+    acc = get_data(f"https://{REGION}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{GAME_NAME}/{TAG_LINE}")
+    if not acc: return
+    puuid = acc['puuid']
+
+    # 2. Récupérer les derniers matchs (Match-V5)
+    m_list = get_data(f"https://{REGION}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count=3")
+    if not m_list: return
+
+    # 3. Gestion de la mémoire (pour ne pas spammer)
+    if os.path.exists(FILE_NAME):
+        with open(FILE_NAME, "r") as f:
+            saved_id = f.read().strip()
+    else:
+        saved_id = ""
+
+    m_list.reverse() # Pour traiter du plus vieux au plus récent
+    new_last_id = saved_id
+    found_new = False
+
+    for match_id in m_list:
+        if match_id == saved_id: continue 
+
+        # 4. Récupérer les détails du match et du rang
+        game = get_data(f"https://{REGION}.api.riotgames.com/lol/match/v5/matches/{match_id}")
+        rank_info = get_data(f"https://{PLATFORM}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}")
+
+        if game and rank_info:
+            found_new = True
+            p = next(pl for pl in game['info']['participants'] if pl['puuid'] == puuid)
+            solo = next((i for i in rank_info if i['queueType'] == "RANKED_SOLO_5x5"), {"tier": "UNRANKED", "rank": "", "leaguePoints": 0})
+            
+            # Calculs
+            dist_master = calculate_master_distance(solo['tier'], solo['rank'], solo['leaguePoints'])
+            duration = game['info']['gameDuration']
+            last_game_date = datetime.datetime.fromtimestamp(game['info']['gameEndTimestamp'] / 1000)
+            days_ago = (datetime.datetime.now() - last_game_date).days
+
+            # Embed Discord
+            embed = {
+                "content": f"Hé <@{DISCORD_USER_ID}>, le Glorieux Évoluteur te surveille ! 📢",
+                "embeds": [{
+                    "author": {"name": f"ANALYSE DE GAME | {GAME_NAME}", "icon_url": "https://ddragon.leagueoflegends.com/cdn/14.7.1/img/champion/Viktor.png"},
+                    "title": f"{'🟩 VICTOIRE' if p['win'] else '🟥 DÉFAITE'} - {int(duration//60)}m",
+                    "description": f"Dernière game jouée il y a **{days_ago} jours**.",
+                    "color": 0x2ecc71 if p['win'] else 0xe74c3c,
+                    "thumbnail": {"url": f"https://ddragon.leagueoflegends.com/cdn/14.7.1/img/champion/{p['championName']}.png"},
+                    "fields": [
+                        {"name": "🏆 RANG", "value": f"{solo['tier']} {solo['rank']} ({solo['leaguePoints']} LP)", "inline": True},
+                        {"name": "🎯 VERS LE MASTER", "value": dist_master, "inline": True},
+                        {"name": "⚔️ KDA", "value": f"{p['kills']}/{p['deaths']}/{p['assists']}", "inline": True},
+                        {"name": "🤖 CHAMPION", "value": p['championName'], "inline": True}
+                    ],
+                    "image": {"url": "https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Viktor_0.jpg"},
+                    "footer": {"text": f"Match ID: {match_id}"},
+                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+                }]
+            }
+
+            if requests.post(WEBHOOK, json=embed).status_code in [200, 204]:
+                new_last_id = match_id
+                time.sleep(2)
+
+    # Sauvegarder le dernier match
+    if found_new:
+        with open(FILE_NAME, "w") as f:
+            f.write(new_last_id)
+        print(f"Mémoire mise à jour : {new_last_id}")
 
 if __name__ == "__main__":
-    run_bot()
+    main()
