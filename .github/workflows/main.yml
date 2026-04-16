@@ -1,13 +1,13 @@
-name: AMD BOT
+name: AMD Daily Check
 
 on:
   schedule:
-    # S'exécute tous les jours à 18h00 UTC
+    # 18:00 UTC = 20:00 Heure de Paris
     - cron: '0 18 * * *'
-  workflow_dispatch: # Permet de lancer le bot manuellement pour tester
+  workflow_dispatch: # CE BOUTON PERMET DE TESTER EN CLIQUANT
 
 jobs:
-  build:
+  check-amd:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run bot
+      - name: Run Tracker
         env:
           RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
