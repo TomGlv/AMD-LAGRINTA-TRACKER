@@ -72,7 +72,7 @@ def main():
         embed = {
             "content": f"📢 Message pour <@{DISCORD_USER_ID}>",
             "embeds": [{
-                "title": f"⚙️ ANALYSE DE VIKTOR",
+                "title": f"⚙️ ANALYSE DE AMD LA GRINTA",
                 "description": f"**{phrase}**\n\nCela fait **{days} jours** sans activité.",
                 "color": 0xe67e22,
                 "fields": [
